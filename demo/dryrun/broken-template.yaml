@@ -1,0 +1,22 @@
+# This template looks plausible but its rule is misspelled "violations".
+# Rego compiles it fine, yet Gatekeeper only consumes "violation" rules, so
+# the template would silently admit every resource. Self-check catches it:
+#
+#   go run ./cmd/gator dryrun -f demo/dryrun/broken-template.yaml --check-only
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: brokenrulename
+spec:
+  crd:
+    spec:
+      names:
+        kind: BrokenRuleName
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package brokenrulename
+
+        violations[{"msg": msg}] {
+          msg := "this rule never reaches Gatekeeper"
+        }

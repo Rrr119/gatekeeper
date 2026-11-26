@@ -1,0 +1,167 @@
+# Acceptance scenario for the ConstraintTemplate self-check and dry-run mode.
+# It contains exactly 3 ConstraintTemplates, 3 Constraints and 5 resources.
+#
+# Run:
+#   go run ./cmd/gator dryrun -f demo/dryrun/acceptance.yaml
+#   go run ./cmd/gator dryrun -f demo/dryrun/acceptance.yaml --enforce
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredlabels
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredLabels
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            labels:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredlabels
+
+        violation[{"msg": msg}] {
+          required := {label | label := input.parameters.labels[_]}
+          provided := {label | input.review.object.metadata.labels[label]}
+          missing := required - provided
+          count(missing) > 0
+          msg := sprintf("you must provide labels %v", [missing])
+        }
+---
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sdisallowlatest
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sDisallowLatest
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sdisallowlatest
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          endswith(container.image, ":latest")
+          msg := sprintf("container %q must not use the latest tag", [container.name])
+        }
+---
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8sallowedregistries
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sAllowedRegistries
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            registries:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sallowedregistries
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not image_allowed(container.image, input.parameters.registries)
+          msg := sprintf("image %q is not from an allowed registry", [container.image])
+        }
+
+        image_allowed(image, registries) {
+          registry := registries[_]
+          startswith(image, registry)
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredLabels
+metadata:
+  name: ns-must-have-owner
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Namespace"]
+  parameters:
+    labels: ["owner"]
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sDisallowLatest
+metadata:
+  name: no-latest-tag
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sAllowedRegistries
+metadata:
+  name: approved-registries
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+  parameters:
+    registries: ["registry.example.com/"]
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: good-ns
+  labels:
+    owner: team-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bad-ns
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-good
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: registry.example.com/app:v1.2.3
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-latest
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: registry.example.com/app:latest
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-bad-registry
+  namespace: default
+spec:
+  containers:
+    - name: sidecar
+      image: evil.example.io/tool:v0.9
